@@ -39,6 +39,10 @@ public class LoadEnergyReadings {
         helper = new EnergyDataHelper();
         session = util.getLocalCQLSession();
         
+        // Create keyspace and table FIRST
+        util.createEnergySchema(session);
+        
+        // THEN prepare the statement (after schema exists)
         String insertQuery = "INSERT INTO " + CassUtil.KEYSPACE_NAME +
                 ".sensor_readings_by_asset (" +
                 "asset_id, time_bucket, reading_timestamp, reading_id, " +
@@ -49,7 +53,6 @@ public class LoadEnergyReadings {
                 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
         
         preparedStatement = session.prepare(insertQuery);
-        util.createEnergySchema(session);
     }
 
     /**
