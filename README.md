@@ -301,13 +301,68 @@ bin/nodetool status
 
 ## 📊 Load Sample Data
 
-### 1. Run Data Loader
+### 1. Create Cassandra Keyspace and Table
+
+First, manually create the schema in Cassandra:
+
+```bash
+cd ~/hcd-1.2.3
+bin/cqlsh
+```
+
+In the CQL shell, run:
+
+```sql
+-- Create keyspace
+CREATE KEYSPACE IF NOT EXISTS energy_ks 
+WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+
+-- Create table
+CREATE TABLE IF NOT EXISTS energy_ks.sensor_readings_by_asset (
+    asset_id UUID,
+    time_bucket TEXT,
+    reading_timestamp TIMESTAMP,
+    reading_id UUID,
+    power_output DOUBLE,
+    voltage DOUBLE,
+    current DOUBLE,
+    temperature DOUBLE,
+    vibration_level DOUBLE,
+    frequency DOUBLE,
+    power_factor DOUBLE,
+    ambient_temperature DOUBLE,
+    wind_speed DOUBLE,
+    solar_irradiance DOUBLE,
+    asset_name TEXT,
+    asset_type TEXT,
+    facility_id UUID,
+    facility_name TEXT,
+    region TEXT,
+    latitude DOUBLE,
+    longitude DOUBLE,
+    operational_status TEXT,
+    alert_level TEXT,
+    efficiency DOUBLE,
+    capacity_factor DOUBLE,
+    PRIMARY KEY ((asset_id, time_bucket), reading_timestamp, reading_id)
+) WITH CLUSTERING ORDER BY (reading_timestamp DESC, reading_id DESC);
+
+-- Verify schema creation
+DESCRIBE KEYSPACE energy_ks;
+DESCRIBE TABLE energy_ks.sensor_readings_by_asset;
+
+-- Exit CQL shell
+exit;
+```
+
+### 2. Run Data Loader
+
+Now load the sample data:
 
 ```bash
 cd ~/energy-iot-demo
 
 # Load 850 assets with 360 readings each (1 hour of data = 306,000 readings)
-# Note: This automatically creates the keyspace and table if they don't exist
 java -cp target/energy-iot-demo-1.0.0.jar \
   com.ibm.wxd.datalabs.demo.cass_spark_iceberg.LoadEnergyReadings \
   850 360
@@ -316,17 +371,15 @@ java -cp target/energy-iot-demo-1.0.0.jar \
 **This takes 5-10 minutes.** Expected output:
 
 ```
-INFO  CassUtil - Creating energy schema...
-INFO  CassUtil - Keyspace 'energy_ks' created/verified
-INFO  CassUtil - Table 'sensor_readings_by_asset' created/verified
 INFO  LoadEnergyReadings - === Energy Sector Data Generation ===
 INFO  LoadEnergyReadings - Total readings to generate: 306000
 INFO  LoadEnergyReadings - Generating 850 assets...
 INFO  LoadEnergyReadings - Assets generated: 500 wind turbines, 200 solar panels...
-INFO  LoadEnergyReadings - Successfully inserted 306000 sensor readings
+INFO  LoadEnergyReadings - Inserted 1000 / 306000 readings...
+INFO  LoadEnergyReadings - Successfully inserted 306000 sensor readings in XX seconds
 ```
 
-### 2. Verify Data in Cassandra
+### 3. Verify Data in Cassandra
 
 ```bash
 cd ~/hcd-1.2.3
