@@ -482,28 +482,40 @@ mc alias set wxd http://127.0.0.1:9000 dummyvalue dummyvalue
 
 # List existing buckets
 mc ls wxd/
+# Expected: hive-bucket, iceberg-bucket, spark-artifacts, wxd-system, etc.
 
-# Create required buckets if they don't exist
-mc mb wxd/spark-artifacts
-mc mb wxd/analytics
+# Create spark-artifacts bucket if it doesn't exist
+mc mb wxd/spark-artifacts 2>/dev/null || echo "spark-artifacts bucket already exists"
 
-# Verify buckets created
-mc ls wxd/
+# Verify spark-artifacts bucket exists
+mc ls wxd/ | grep spark-artifacts
 
 # Upload JAR
 cd ~/energy-iot-demo
 mc cp target/energy-iot-demo-1.0.0.jar wxd/spark-artifacts/
 
-# Verify upload
-mc ls wxd/spark-artifacts/energy-iot-demo-1.0.0.jar
+# Verify upload (should show ~60MB file)
+mc ls wxd/spark-artifacts/
+# Expected output:
+# [timestamp] 60MiB STANDARD energy-iot-demo-1.0.0.jar
 ```
 
-### 2. Create Spark Application
+**Note:** We'll use the existing `iceberg-bucket` for storing Iceberg data (not creating a new `analytics` bucket).
+
+### 2. Create and Submit Spark Application
+
+**Get your EC2 private IP first (run this ON the EC2 instance):**
+```bash
+curl http://169.254.169.254/latest/meta-data/local-ipv4
+# Example output: 172.31.26.107
+```
+
+**Submit Spark Job:**
 
 1. Open watsonx.data UI: `https://localhost:9443`
 2. Go to **Infrastructure Manager** → **Applications**
 3. Click **Create application**
-4. Paste this JSON (update `spark.cassandra.connection.host` with your EC2 private IP):
+4. Paste this JSON (**update** `spark.cassandra.connection.host` with your EC2 private IP from above):
 
 ```json
 {
@@ -516,72 +528,108 @@ mc ls wxd/spark-artifacts/energy-iot-demo-1.0.0.jar
       "spark.cassandra.auth.username": "cassandra",
       "spark.cassandra.auth.password": "cassandra",
       "spark.sql.catalog.spark_catalog.type": "iceberg",
-      "spark.sql.catalog.spark_catalog.warehouse": "s3a://analytics/",
+      "spark.sql.catalog.spark_catalog.warehouse": "s3a://iceberg-bucket/",
       "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
       "spark.hadoop.fs.s3a.path.style.access": "true",
       "spark.hadoop.fs.s3a.bucket.spark-artifacts.endpoint": "http://ibm-lh-minio-svc:9000",
       "spark.hadoop.fs.s3a.bucket.spark-artifacts.access.key": "dummyvalue",
       "spark.hadoop.fs.s3a.bucket.spark-artifacts.secret.key": "dummyvalue",
       "spark.hadoop.fs.s3a.bucket.spark-artifacts.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
-      "spark.hadoop.fs.s3a.bucket.analytics.endpoint": "http://ibm-lh-minio-svc:9000",
-      "spark.hadoop.fs.s3a.bucket.analytics.access.key": "dummyvalue",
-      "spark.hadoop.fs.s3a.bucket.analytics.secret.key": "dummyvalue",
-      "spark.hadoop.fs.s3a.bucket.analytics.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+      "spark.hadoop.fs.s3a.bucket.iceberg-bucket.endpoint": "http://ibm-lh-minio-svc:9000",
+      "spark.hadoop.fs.s3a.bucket.iceberg-bucket.access.key": "dummyvalue",
+      "spark.hadoop.fs.s3a.bucket.iceberg-bucket.secret.key": "dummyvalue",
+      "spark.hadoop.fs.s3a.bucket.iceberg-bucket.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
     }
   },
   "deploy_mode": "local"
 }
 ```
 
-**Get your EC2 private IP (run this ON the EC2 instance):**
-```bash
-curl http://169.254.169.254/latest/meta-data/local-ipv4
-# Example output: 172.31.26.107
-```
-
 5. Click **Submit application**
+6. Note the **Application ID** shown (e.g., `spark-app-xxxxx`)
 
 ### 3. Monitor Spark Job
 
-Watch the logs in the UI. Expected messages:
+**Option 1: Monitor via UI (Recommended)**
+
+1. In watsonx.data UI, go to **Infrastructure Manager** → **Applications**
+2. Find your application (status should be "Running")
+3. Click on the application to view **Logs** tab
+4. Watch for progress messages in real-time
+
+**Option 2: Monitor via kubectl (Command Line)**
+
+```bash
+# List Spark applications
+kubectl get sparkapplications -n wxd
+
+# Get Spark driver pod name
+kubectl get pods -n wxd | grep spark
+
+# Watch logs in real-time (replace POD_NAME with actual driver pod)
+kubectl logs -n wxd -f <DRIVER_POD_NAME>
+
+# Example:
+# kubectl logs -n wxd -f spark-app-xxxxx-driver
+```
+
+**Expected Log Messages:**
 
 ```
 INFO CassandraToIceberg - Spark Session created successfully
 INFO CassandraToIceberg - Reading data from Cassandra...
-INFO CassandraToIceberg - Record count: 306000
+INFO CassandraToIceberg - Cassandra data loaded: 306000 records
 INFO CassandraToIceberg - Writing 306000 records to Iceberg table
-INFO CassandraToIceberg - Iceberg table 'spark_catalog.energy_data.sensor_readings' created
-INFO CassandraToIceberg - ✓ Data verification successful
+INFO CassandraToIceberg - Iceberg table 'spark_catalog.energy_data.sensor_readings' created successfully
+INFO CassandraToIceberg - Iceberg table record count: 306000
+INFO CassandraToIceberg - ✓ Data verification successful - record counts match
 INFO CassandraToIceberg - ETL job completed successfully
 ```
 
 **This takes 3-5 minutes.**
 
+**Check Job Status:**
+```bash
+# Check application status
+kubectl get sparkapplications -n wxd
+
+# Expected: COMPLETED
+```
+
 ### 4. Verify Data in MinIO
 
 ```bash
-# Check that Iceberg files were created
-mc tree wxd/analytics/
+# Check that Iceberg files were created in iceberg-bucket
+mc ls wxd/iceberg-bucket/
+
+# List the energy_data directory
+mc ls wxd/iceberg-bucket/energy_data/
+
+# List the sensor_readings table
+mc ls wxd/iceberg-bucket/energy_data/sensor_readings/
 
 # Expected structure:
-# wxd/analytics/
+# wxd/iceberg-bucket/
 # └─ energy_data/
 #    └─ sensor_readings/
-#       ├─ data/
-#       └─ metadata/
+#       ├─ data/           (Parquet files with actual data)
+#       └─ metadata/       (Iceberg metadata files)
+
+# View detailed tree (optional)
+mc tree wxd/iceberg-bucket/energy_data/
 ```
 
 ---
 
 ## 🔍 Query Iceberg Tables
 
-### 1. Add MinIO Storage (If Not Added)
+### 1. Add MinIO Storage (If Not Already Added)
 
 In **Infrastructure Manager**:
 1. Click **Add component** → **Storage**
 2. Fill in:
-   - **Display name**: `analytics-storage`
-   - **Bucket name**: `analytics`
+   - **Display name**: `iceberg-storage`
+   - **Bucket name**: `iceberg-bucket`
    - **Endpoint**: `http://ibm-lh-minio-svc:9000`
    - **Access/Secret key**: `dummyvalue` / `dummyvalue`
 3. Check **Associate Catalog**:
@@ -589,16 +637,18 @@ In **Infrastructure Manager**:
    - **Catalog name**: `iceberg_data`
 4. **Test connection** → **Create**
 
+**Note:** If you already have storage associated with the `iceberg_data` catalog, you can skip this step.
+
 ### 2. Register the Iceberg Table
 
 In **Query workspace**:
 
 ```sql
--- Register the table
+-- Register the table (use iceberg-bucket, not analytics)
 CALL iceberg_data.system.register_table(
   'energy_data', 
   'sensor_readings', 
-  's3a://analytics/energy_data/sensor_readings'
+  's3a://iceberg-bucket/energy_data/sensor_readings'
 );
 ```
 
