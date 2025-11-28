@@ -8,7 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.datastax.oss.driver.api.core.CqlSession;
-import com.datastax.oss.driver.api.core.cql.PreparedStatement;
+import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 import com.ibm.wxd.datalabs.demo.cass_spark_iceberg.dto.Asset;
 import com.ibm.wxd.datalabs.demo.cass_spark_iceberg.dto.SensorReading;
 import com.ibm.wxd.datalabs.demo.cass_spark_iceberg.utils.CassUtil;
@@ -24,7 +24,6 @@ import com.ibm.wxd.datalabs.demo.cass_spark_iceberg.utils.EnergyDataHelper;
 public class LoadEnergyReadings {
     private static Logger LOGGER = LoggerFactory.getLogger(LoadEnergyReadings.class);
     private CqlSession session;
-    private PreparedStatement preparedStatement;
     
     // Configurable parameters
     private static final int DEFAULT_NUM_ASSETS = 850;
@@ -41,18 +40,6 @@ public class LoadEnergyReadings {
         
         // Create keyspace and table FIRST
         util.createEnergySchema(session);
-        
-        // THEN prepare the statement (after schema exists)
-        String insertQuery = "INSERT INTO " + CassUtil.KEYSPACE_NAME +
-                ".sensor_readings_by_asset (" +
-                "asset_id, time_bucket, reading_timestamp, reading_id, " +
-                "power_output, voltage, current, temperature, vibration_level, frequency, power_factor, " +
-                "ambient_temperature, wind_speed, solar_irradiance, " +
-                "asset_name, asset_type, facility_id, facility_name, region, latitude, longitude, " +
-                "operational_status, alert_level, efficiency, capacity_factor" +
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
-        
-        preparedStatement = session.prepare(insertQuery);
     }
 
     /**
@@ -97,45 +84,21 @@ public class LoadEnergyReadings {
     }
 
     /**
-     * Load sensor readings into Cassandra
+     * Load sensor readings into Cassandra (only insert non-null columns to avoid tombstones)
      */
     public void loadData(int numAssets, int readingsPerAsset) {
         List<SensorReading> readings = generateSensorReadings(numAssets, readingsPerAsset);
         
-        LOGGER.info("Starting to insert {} readings into Cassandra...", readings.size());
+        LOGGER.info("Starting to insert {} readings into Cassandra (skipping null columns)...", readings.size());
         
         int batchCount = 0;
         int totalInserted = 0;
         long startTime = System.currentTimeMillis();
         
         for (SensorReading reading : readings) {
-            session.execute(preparedStatement.bind(
-                reading.getAssetId(),
-                reading.getTimeBucket(),
-                reading.getReadingTimestamp(),
-                reading.getReadingId(),
-                reading.getPowerOutput(),
-                reading.getVoltage(),
-                reading.getCurrent(),
-                reading.getTemperature(),
-                reading.getVibrationLevel(),
-                reading.getFrequency(),
-                reading.getPowerFactor(),
-                reading.getAmbientTemperature(),
-                reading.getWindSpeed(),
-                reading.getSolarIrradiance(),
-                reading.getAssetName(),
-                reading.getAssetType(),
-                reading.getFacilityId(),
-                reading.getFacilityName(),
-                reading.getRegion(),
-                reading.getLatitude(),
-                reading.getLongitude(),
-                reading.getOperationalStatus(),
-                reading.getAlertLevel(),
-                reading.getEfficiency(),
-                reading.getCapacityFactor()
-            ));
+            // Build dynamic INSERT with only non-null columns
+            String insertCql = buildInsertStatement(reading);
+            session.execute(SimpleStatement.newInstance(insertCql));
             
             batchCount++;
             totalInserted++;
@@ -143,8 +106,8 @@ public class LoadEnergyReadings {
             if (batchCount >= BATCH_SIZE) {
                 long elapsed = (System.currentTimeMillis() - startTime) / 1000;
                 double rate = totalInserted / Math.max(1.0, elapsed);
-                LOGGER.info("Inserted {} / {} readings ({:.1f} readings/sec)...", 
-                    totalInserted, readings.size(), rate);
+                LOGGER.info("Inserted {} / {} readings ({} readings/sec)...", 
+                    totalInserted, readings.size(), (int)rate);
                 batchCount = 0;
             }
         }
@@ -152,8 +115,8 @@ public class LoadEnergyReadings {
         long totalTime = (System.currentTimeMillis() - startTime) / 1000;
         double avgRate = readings.size() / Math.max(1.0, totalTime);
         
-        LOGGER.info("Successfully inserted {} sensor readings in {} seconds ({:.1f} readings/sec)", 
-            readings.size(), totalTime, avgRate);
+        LOGGER.info("Successfully inserted {} sensor readings in {} seconds ({} readings/sec)", 
+            readings.size(), totalTime, (int)avgRate);
         
         // Show sample queries
         LOGGER.info("\n=== Sample Queries ===");
@@ -165,6 +128,65 @@ public class LoadEnergyReadings {
             CassUtil.KEYSPACE_NAME);
         
         util.closeSession(session);
+    }
+    
+    /**
+     * Build dynamic INSERT statement with only non-null columns (avoids tombstones)
+     */
+    private String buildInsertStatement(SensorReading reading) {
+        StringBuilder columns = new StringBuilder();
+        StringBuilder values = new StringBuilder();
+        
+        // Required columns (always present)
+        columns.append("asset_id, time_bucket, reading_timestamp, reading_id, ");
+        values.append(reading.getAssetId()).append(", '")
+              .append(reading.getTimeBucket()).append("', '")
+              .append(reading.getReadingTimestamp()).append("', ")
+              .append(reading.getReadingId()).append(", ");
+        
+        // Sensor measurements (include only if not null)
+        addColumn(columns, values, "power_output", reading.getPowerOutput());
+        addColumn(columns, values, "voltage", reading.getVoltage());
+        addColumn(columns, values, "current", reading.getCurrent());
+        addColumn(columns, values, "temperature", reading.getTemperature());
+        addColumn(columns, values, "vibration_level", reading.getVibrationLevel());
+        addColumn(columns, values, "frequency", reading.getFrequency());
+        addColumn(columns, values, "power_factor", reading.getPowerFactor());
+        
+        // Environmental data (include only if not null)
+        addColumn(columns, values, "ambient_temperature", reading.getAmbientTemperature());
+        addColumn(columns, values, "wind_speed", reading.getWindSpeed());
+        addColumn(columns, values, "solar_irradiance", reading.getSolarIrradiance());
+        
+        // Asset metadata (always present)
+        columns.append("asset_name, asset_type, facility_id, facility_name, region, latitude, longitude, ");
+        values.append("'").append(reading.getAssetName()).append("', '")
+              .append(reading.getAssetType()).append("', ")
+              .append(reading.getFacilityId()).append(", '")
+              .append(reading.getFacilityName()).append("', '")
+              .append(reading.getRegion()).append("', ")
+              .append(reading.getLatitude()).append(", ")
+              .append(reading.getLongitude()).append(", ");
+        
+        // Status and metrics (always present)
+        columns.append("operational_status, alert_level, efficiency, capacity_factor");
+        values.append("'").append(reading.getOperationalStatus()).append("', '")
+              .append(reading.getAlertLevel()).append("', ")
+              .append(reading.getEfficiency()).append(", ")
+              .append(reading.getCapacityFactor());
+        
+        return "INSERT INTO " + CassUtil.KEYSPACE_NAME + ".sensor_readings_by_asset (" + 
+               columns.toString() + ") VALUES (" + values.toString() + ");";
+    }
+    
+    /**
+     * Add column and value to INSERT if value is not null
+     */
+    private void addColumn(StringBuilder columns, StringBuilder values, String columnName, Double value) {
+        if (value != null) {
+            columns.append(columnName).append(", ");
+            values.append(value).append(", ");
+        }
     }
 
     public static void main(String[] args) {
