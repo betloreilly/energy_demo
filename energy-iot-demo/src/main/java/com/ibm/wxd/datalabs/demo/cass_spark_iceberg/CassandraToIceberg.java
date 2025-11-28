@@ -5,6 +5,9 @@ import org.slf4j.LoggerFactory;
 import com.ibm.wxd.datalabs.demo.cass_spark_iceberg.utils.SparkUtil;
 import org.apache.spark.sql.*;
 import static org.apache.spark.sql.functions.*;
+import scala.collection.JavaConverters;
+import scala.collection.Seq;
+import java.util.Arrays;
 
 /**
  * ETL job to transform operational sensor data from Cassandra to analytical format in Iceberg
@@ -90,11 +93,16 @@ public class CassandraToIceberg {
             LOGGER.info("Writing {} records to Iceberg table: {}", 
                 transformedDF.count(), icebergSensorReadings);
             
+            // Convert additional partition columns to Scala Seq
+            Seq<Column> additionalPartitions = JavaConverters.asScalaBuffer(
+                Arrays.asList(col("month"), col("day"))
+            ).toSeq();
+            
             transformedDF.writeTo(icebergSensorReadings)
                 .using("iceberg")
                 .tableProperty("write.format.default", "parquet")
                 .tableProperty("write.parquet.compression-codec", "snappy")
-                .partitionedBy(col("year"), col("month"), col("day"))
+                .partitionedBy(col("year"), additionalPartitions)
                 .createOrReplace();
             
             LOGGER.info("Iceberg table '{}' created successfully", icebergSensorReadings);
