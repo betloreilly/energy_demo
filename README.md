@@ -480,7 +480,14 @@ kubectl -n wxd port-forward svc/ibm-lh-minio-svc 9000:9000
 # Configure MinIO client
 mc alias set wxd http://127.0.0.1:9000 dummyvalue dummyvalue
 
-# List buckets
+# List existing buckets
+mc ls wxd/
+
+# Create required buckets if they don't exist
+mc mb wxd/spark-artifacts
+mc mb wxd/analytics
+
+# Verify buckets created
 mc ls wxd/
 
 # Upload JAR
