@@ -31,8 +31,8 @@ watsonx_data/
   * [A. EC2 Infrastructure Setup](#a-ec2-infrastructure-setup)
   * [B. Build the JAR File](#b-build-the-jar-file)
   * [C. DataStax HCD Setup](#c-datastax-hcd-setup)
-  * [D. Add Cassandra to watsonx.data](#d-add-cassandra-to-watsonxdata)
 * [📊 Load Sample Data](#-load-sample-data)
+* [🔗 Connect Cassandra to watsonx.data](#-connect-cassandra-to-watsonxdata)
 * [⚡ Run Spark ETL Job](#-run-spark-etl-job)
 * [🔍 Query Iceberg Tables](#-query-iceberg-tables)
 * [📚 References](#-references)
@@ -299,43 +299,6 @@ bin/nodetool status
 
 ---
 
-### D. Add Cassandra to watsonx.data
-
-#### 1. Access watsonx.data UI
-
-Open `https://localhost:9443` in your browser
-
-#### 2. Add Cassandra as Data Source
-
-1. Go to **Infrastructure Manager**
-2. Click **Add database** → **Apache Cassandra**
-3. Fill in connection details:
-
-```
-Display name: cassandra-energy
-Host: <EC2_PRIVATE_IP>    # Run this command ON EC2: curl http://169.254.169.254/latest/meta-data/local-ipv4
-Port: 9042
-Username: cassandra
-Password: cassandra
-```
-
-4. Click **Test connection** → Should succeed
-5. Click **Add**
-
-#### 3. Verify Cassandra Connection
-
-Go to **Query workspace** and run:
-
-```sql
-SHOW CATALOGS;
--- Should see: cassandra_energy (or similar name)
-
-SHOW SCHEMAS FROM cassandra_energy;
--- May be empty initially (data loaded in next step)
-```
-
----
-
 ## 📊 Load Sample Data
 
 ### 1. Run Data Loader
@@ -344,6 +307,7 @@ SHOW SCHEMAS FROM cassandra_energy;
 cd ~/energy-iot-demo
 
 # Load 850 assets with 360 readings each (1 hour of data = 306,000 readings)
+# Note: This automatically creates the keyspace and table if they don't exist
 java -cp target/energy-iot-demo-1.0.0.jar \
   com.ibm.wxd.datalabs.demo.cass_spark_iceberg.LoadEnergyReadings \
   850 360
@@ -352,6 +316,9 @@ java -cp target/energy-iot-demo-1.0.0.jar \
 **This takes 5-10 minutes.** Expected output:
 
 ```
+INFO  CassUtil - Creating energy schema...
+INFO  CassUtil - Keyspace 'energy_ks' created/verified
+INFO  CassUtil - Table 'sensor_readings_by_asset' created/verified
 INFO  LoadEnergyReadings - === Energy Sector Data Generation ===
 INFO  LoadEnergyReadings - Total readings to generate: 306000
 INFO  LoadEnergyReadings - Generating 850 assets...
@@ -378,13 +345,56 @@ LIMIT 10;
 exit;
 ```
 
-### 3. Query via watsonx.data (Federated Query)
+---
 
-In **Query workspace**:
+## 🔗 Connect Cassandra to watsonx.data
+
+Now that we have data in Cassandra, let's connect it to watsonx.data for federated queries.
+
+### 1. Access watsonx.data UI
+
+Open `https://localhost:9443` in your browser (ensure SSH tunnel is still running)
+
+### 2. Add Cassandra as Data Source
+
+1. Go to **Infrastructure Manager**
+2. Click **Add database** → **Apache Cassandra**
+3. Fill in connection details:
+
+```
+Display name: cassandra-energy
+Host: <EC2_PRIVATE_IP>    # Run this command ON EC2: curl http://169.254.169.254/latest/meta-data/local-ipv4
+Port: 9042
+Username: cassandra
+Password: cassandra
+```
+
+4. Click **Test connection** → Should succeed
+5. Click **Add**
+
+### 3. Verify Cassandra Connection
+
+Go to **Query workspace** and run:
 
 ```sql
--- Show tables
+-- List all catalogs (should see cassandra_energy)
+SHOW CATALOGS;
+
+-- List schemas in Cassandra catalog (should see energy_ks)
+SHOW SCHEMAS FROM cassandra_energy;
+
+-- List tables in energy_ks schema
 SHOW TABLES FROM cassandra_energy.energy_ks;
+```
+
+### 4. Query via watsonx.data (Federated Query)
+
+Now you can query Cassandra data through watsonx.data:
+
+```sql
+-- Count all readings
+SELECT COUNT(*) FROM cassandra_energy.energy_ks.sensor_readings_by_asset;
+-- Should return: 306000
 
 -- Query operational data
 SELECT asset_name, asset_type, power_output, alert_level
